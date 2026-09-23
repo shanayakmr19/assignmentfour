@@ -1,0 +1,336 @@
+---
+title: "DATA301 – Assignment IV"
+author: "Shanaya Kumar"
+date: today
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+    code-fold: show
+execute:
+  warning: false
+  message: false
+bibliography: references.bib
+---
+
+```{r}
+#| label: setup
+library(fpp2)      # ausbeer data + forecast/ggplot2 helpers
+library(ggplot2)
+library(dplyr)
+library(knitr)
+```
+
+# Exercise 1 – Estimating the rate of an exponential distribution
+
+## Sample quantiles: which definition? {#sec-quantiles}
+
+**Summary of @wicklin2017.** Statistical software does not agree on how to compute a sample quantile. @hyndman1996 catalogued nine definitions in use, and Wicklin shows that all of them can be written in one form: after sorting the data, the $p$-th quantile is
+
+$$
+\hat q(p) = (1-\gamma)\,x_{(j)} + \gamma\,x_{(j+1)},
+$$
+
+where the index $j$ and the weight $\gamma \in [0,1]$ depend on $n$, $p$ and a constant $m$ that differs between definitions. The nine definitions fall into two groups:
+
+* **Types 1–3 are discontinuous.** They are based on the inverse of the empirical distribution function, so they return an observed value, or the average of two neighbouring observed values. Type 2 is the SAS default.
+* **Types 4–9 interpolate linearly** between neighbouring order statistics, so they can return any value in the range of the data. They differ only in where they place the "plotting position" $p_k$ of the $k$-th order statistic. For example, type 6 uses $k/(n+1)$, type 7 uses $(k-1)/(n-1)$ and type 8 uses $(k-1/3)/(n+1/3)$.
+
+Wicklin compares the definitions on a tiny data set of 10 observations with ties, $\{0,1,1,1,2,2,2,4,5,8\}$, and on a sample of 100 uniform values. With 10 observations the nine definitions give visibly different quartiles. With 100 observations the differences are small. His conclusion is that **the choice matters for small samples and is mostly harmless for large ones**, and that most practitioners simply use their software's default.
+
+@hyndman1996 go further. They judge the definitions against six desirable properties and **recommend type 8**, because it is approximately *median-unbiased* for every continuous distribution. This means $\hat q(p)$ falls below the true quantile about half of the time, whatever the model.
+
+**Which type would I use, and why?** I use **type 8**, for two reasons:
+
+1. It is the definition @hyndman1996 recommend, and it does not depend on the (exponential) model being correct. That fits the spirit of $\hat\lambda_{\text{IQR}}$ as a "by analogy" estimator.
+2. It matters a lot here, because the Monte Carlo experiment includes $n = 5$. For $n=5$, **type 7 gives $q_{1/4} = X_{(2)}$ and $q_{3/4}=X_{(4)}$**, so the denominator of $\hat\lambda_{\text{IQR}}$ is $X_{(4)}-X_{(2)}$. For exponential data the spacings $X_{(k+1)}-X_{(k)}$ are independent exponentials, so $X_{(4)}-X_{(2)}$ is a sum of two of them. Its density behaves like $c\,t$ near $t=0$, so
+   $$E\big[(X_{(4)}-X_{(2)})^{-2}\big] \propto \int_0 t^{-2}\,t\,dt = \infty .$$
+   **With type 7, the MSE of $\hat\lambda_{\text{IQR}}$ is infinite when $n=5$.** Type 8 interpolates, so it also includes parts of the outer spacings $X_{(2)}-X_{(1)}$ and $X_{(5)}-X_{(4)}$. The denominator then becomes a sum of four independent exponential terms, its density behaves like $t^{3}$ near zero, and the MSE is finite. The quick check below shows this. With type 7 the simulated MSE is huge and dominated by a few extreme values. With type 8 it is stable.
+
+```{r}
+#| label: type7-vs-type8
+lam_iqr_type <- function(x, type) {
+  q <- quantile(x, c(.25, .75), type = type, names = FALSE)
+  log(3) / (q[2] - q[1])
+}
+set.seed(301)
+chk <- sapply(c(7, 8), function(tp) {
+  err <- replicate(1e5, lam_iqr_type(rexp(5, rate = 1), tp)) - 1
+  c(type = tp, MSE = mean(err^2), largest_error = max(abs(err)))
+})
+kable(t(chk), digits = 2, caption = "IQR estimator, n = 5, λ = 1, 100 000 samples")
+```
+
+**Default in my software.** R's default is type 7 (checked below). Python's `numpy.quantile` and `pandas.Series.quantile` also default to the equivalent `"linear"` method.
+
+```{r}
+#| label: r-default
+R.version.string
+formals(stats:::quantile.default)$type
+```
+
+## Bootstrap bias-corrected IQR estimator
+
+**Derivation.** The bias of $\hat\lambda_{\text{IQR}}$ is $\operatorname{Bias}(\lambda) = E_\lambda[\hat\lambda_{\text{IQR}}(\mathbf X)] - \lambda$. We do not know $\lambda$ or the true distribution $F$, so the bootstrap replaces $F$ with the empirical distribution $\hat F_n$ of the observed sample. Then $\hat\lambda_{\text{IQR}}(\mathbf X)$ plays the role of the "true" parameter, and the bootstrap replicates $\hat\lambda^{*}_b = \hat\lambda_{\text{IQR}}(\mathbf X^{*}_b)$ play the role of the estimator:
+
+1. Draw $B = 200$ bootstrap samples $\mathbf X^*_1,\dots,\mathbf X^*_B$, each of size $n$, **with replacement** from $\mathbf X$.
+2. Compute $\hat\lambda^*_b = \hat\lambda_{\text{IQR}}(\mathbf X^*_b)$ for $b=1,\dots,B$.
+3. Estimate the bias with $\widehat{\operatorname{Bias}} = \bar\lambda^{*} - \hat\lambda_{\text{IQR}}(\mathbf X)$, where $\bar\lambda^* = B^{-1}\sum_b \hat\lambda^*_b$.
+4. Subtract the estimated bias:
+$$
+\tilde\lambda(\mathbf X) = \hat\lambda_{\text{IQR}}(\mathbf X) - \widehat{\operatorname{Bias}}
+= 2\,\hat\lambda_{\text{IQR}}(\mathbf X) - \frac1B\sum_{b=1}^{B}\hat\lambda^*_b .
+$$
+
+This is a *first-order* correction. It removes the $O(n^{-1})$ term of the bias, but it can increase the variance, and $\tilde\lambda$ is not guaranteed to be positive.
+
+**A practical problem with small $n$.** A bootstrap sample drawn from only 5 values often contains many repeats. If every value in a resample is the same, then $q_{3/4}=q_{1/4}$ and $\hat\lambda^*_b = \infty$. This happens with probability $5/5^5 = 0.0016$ per resample, so with $B=200$ it affects roughly 27% of samples of size 5. I **drop non-finite replicates** before averaging. Resamples with a tiny but non-zero IQR still produce very large $\hat\lambda^*_b$, and those feed straight into $\tilde\lambda$ (see the results below).
+
+**Implementation.** Base R's `quantile()` is slow when it is called hundreds of thousands of times. To speed things up, I compute the type 8 quartiles directly from the sorted columns of an $n\times B$ matrix of resamples. The `stopifnot()` line checks that this gives exactly the same answer as `quantile(type = 8)`.
+
+```{r}
+#| label: estimators
+# type-8 sample quantile of each column of a column-sorted matrix M (n x B)
+q8_cols <- function(M, p) {
+  n <- nrow(M); h <- (n + 1/3) * p + 1/3
+  j <- floor(h); g <- h - j
+  if (j < 1)  return(M[1, ])
+  if (j >= n) return(M[n, ])
+  M[j, ] + g * (M[j + 1, ] - M[j, ])
+}
+lam_iqr_cols <- function(M) log(3) / (q8_cols(M, .75) - q8_cols(M, .25))
+
+lambda_ml  <- function(x) 1 / mean(x)
+lambda_iqr <- function(x) lam_iqr_cols(matrix(sort(x)))
+lambda_bc  <- function(x, B = 200) {
+  n  <- length(x)
+  Xb <- matrix(sample(x, n * B, replace = TRUE), nrow = n)       # B resamples
+  Xb <- matrix(Xb[order(rep(seq_len(B), each = n), Xb)], nrow = n)  # sort each column
+  lb <- lam_iqr_cols(Xb)
+  lb <- lb[is.finite(lb)]                                       # drop IQR = 0 resamples
+  2 * lambda_iqr(x) - mean(lb)
+}
+
+# check the fast quantile against R's quantile(type = 8)
+set.seed(1); x <- rexp(13)
+stopifnot(isTRUE(all.equal(lambda_iqr(x), lam_iqr_type(x, 8))))
+c(ML = lambda_ml(x), IQR = lambda_iqr(x), BC = lambda_bc(x))
+```
+
+## Monte Carlo experiment
+
+### Choosing the number of replications {#sec-reps}
+
+For each $(\lambda, n)$ the MSE is estimated by $\widehat{\text{MSE}} = R^{-1}\sum_{r=1}^R(\hat\lambda_r-\lambda)^2$. This is a sample mean, so by the CLT its Monte Carlo standard error is $s/\sqrt R$, where $s$ is the standard deviation of the squared errors [@robert2009, ch. 3]. I want the **relative** Monte Carlo error to be at most 2.5%:
+
+$$
+\frac{s/\sqrt R}{\widehat{\text{MSE}}} \le 0.025 \quad\Longleftrightarrow\quad R \ \ge\ \left(\frac{s}{0.025\,\widehat{\text{MSE}}}\right)^2 .
+$$
+
+**The number of replications only needs to depend on $n$, not on $\lambda$.** All three estimators are scale-equivariant. If $\mathbf Y\sim\text{Exp}(1)$ then $\mathbf X=\mathbf Y/\lambda\sim\text{Exp}(\lambda)$, and $\hat\lambda(\mathbf X)=\lambda\,\hat\lambda(\mathbf Y)$. This holds for $\hat\lambda_{\text{ML}}$ and $\hat\lambda_{\text{IQR}}$, and also for $\tilde\lambda$, because resampling commutes with rescaling. So $(\hat\lambda-\lambda)^2/\lambda^2$ has the same distribution for every $\lambda$. The MSE scales like $\lambda^2$ and the relative error $s/\text{MSE}$ does not change with $\lambda$. I therefore run a pilot with $\lambda = 1$ and $R_0=2000$ for each $n$, and pick $R$ from the formula above. I use the larger of the ML and IQR requirements, round up to a multiple of 1000, and cap $R$ at 20 000 to keep the run time reasonable.
+
+```{r}
+#| label: pilot
+#| cache: true
+set.seed(2026)
+ns <- c(5, 30, 100); lambdas <- c(.1, 1, 10)
+pilot <- lapply(ns, function(n) {
+  err2 <- t(replicate(2000, { x <- rexp(n); c(lambda_ml(x), lambda_iqr(x), lambda_bc(x)) })) - 1
+  err2 <- err2^2
+  cv <- apply(err2, 2, sd) / colMeans(err2)            # s / MSE
+  data.frame(n = n, cv_ML = cv[1], cv_IQR = cv[2], cv_BC = cv[3],
+             R_needed = ceiling((max(cv[1:2]) / 0.025)^2))
+}) |> bind_rows()
+pilot$R <- pmin(20000, ceiling(pilot$R_needed / 1000) * 1000)
+kable(pilot, digits = 2, row.names = FALSE,
+      caption = "Pilot study (λ = 1, R₀ = 2000): coefficient of variation of the squared errors and chosen R")
+```
+
+The ML and IQR estimators give a clear target $R$ for each $n$. The bias-corrected estimator at $n = 5$ is different. Its squared errors are so heavy-tailed that their coefficient of variation is roughly ten times larger than for the other estimators, so reaching 2.5% precision would take millions of replications. For that one cell, no practical $R$ reaches 2.5% precision, so I report its Monte Carlo standard error and read the number with care.
+
+### Running the experiment
+
+```{r}
+#| label: montecarlo
+#| cache: true
+set.seed(20260923)
+grid <- expand.grid(lambda = lambdas, n = ns) |> left_join(pilot[, c("n", "R")], by = "n")
+
+one_cell <- function(lambda, n, R) {
+  est <- t(replicate(R, {
+    x <- rexp(n, rate = lambda)
+    c(ML = lambda_ml(x), IQR = lambda_iqr(x), BC = lambda_bc(x))
+  }))
+  err2 <- (est - lambda)^2
+  data.frame(lambda = lambda, n = n, R = R,
+             estimator = colnames(est),
+             MSE = colMeans(err2),
+             MC_SE = apply(err2, 2, sd) / sqrt(R),
+             bias = colMeans(est) - lambda)
+}
+res <- bind_rows(Map(one_cell, grid$lambda, grid$n, grid$R))
+res$relMSE <- res$MSE / res$lambda^2
+res$estimator <- factor(res$estimator, levels = c("ML", "IQR", "BC"),
+                        labels = c("ML", "IQR", "Bootstrap-corrected IQR"))
+```
+
+### Results
+
+```{r}
+#| label: tbl-mse
+res |>
+  transmute(lambda, n, R, estimator,
+            `MSE (± MC s.e.)` = sprintf("%.4g (± %.2g)", MSE, MC_SE),
+            `MSE / λ²` = relMSE) |>
+  kable(digits = 4, row.names = FALSE, caption = "Estimated MSE for every (λ, n) and estimator")
+```
+
+```{r}
+#| label: fig-mse
+#| fig-cap: "MSE/λ² (log scale) against sample size. Error bars are ±2 Monte Carlo standard errors. Each panel is one value of λ. The panels look the same because MSE scales exactly with λ²; the exception is the unstable bootstrap-corrected estimator at n = 5."
+#| fig-width: 9
+#| fig-height: 3.8
+ggplot(res, aes(n, relMSE, colour = estimator)) +
+  geom_line() + geom_point() +
+  geom_errorbar(aes(ymin = pmax(relMSE - 2 * MC_SE / lambda^2, 1e-4),
+                    ymax = relMSE + 2 * MC_SE / lambda^2), width = .06) +
+  scale_x_log10(breaks = ns) + scale_y_log10() +
+  facet_wrap(~ lambda, labeller = label_both) +
+  labs(y = "MSE / λ²", colour = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: summary-numbers
+#| echo: false
+r <- function(est, n, what = "relMSE") mean(res[[what]][res$estimator == est & res$n == n])
+```
+
+**Discussion.**
+
+* **The MSE is proportional to $\lambda^2$.** Within each $n$, the column $\text{MSE}/\lambda^2$ is (up to Monte Carlo error) the same for $\lambda = 0.1, 1, 10$. This is the scale-equivariance argument from @sec-reps, and it serves as a check that the simulation is correct. So the comparison between estimators depends only on $n$. The one exception is the bootstrap-corrected estimator at $n=5$. Its three estimates differ a lot, but each has a Monte Carlo standard error about as large as the estimate itself, so the differences are simulation noise. It is a sign that this MSE is extremely unstable, and possibly infinite.
+* **Maximum likelihood is best in every cell.** Its relative MSE is about `r round(r("ML",5),3)`, `r round(r("ML",30),3)` and `r round(r("ML",100),4)` for $n = 5, 30, 100$. The exact values are $(n+2)/((n-1)(n-2))$, which gives $0.583$, $0.039$ and $0.0105$, so the simulation agrees. This is what we expect when the model is correct, because the ML estimator is asymptotically efficient.
+* **The IQR estimator is worse, with roughly 1.5–2.5 times the MSE of ML** (relative MSE ≈ `r round(r("IQR",5),2)`, `r round(r("IQR",30),3)`, `r round(r("IQR",100),4)`). It only uses the two quartiles, so it throws away information. It is not a bad estimator, though, and it would be more robust if the data contained a few extreme inter-arrival times.
+* **The bootstrap bias correction does not pay off in MSE.** For $n = 30$ and $n = 100$, $\tilde\lambda$ has a *slightly larger* MSE than $\hat\lambda_{\text{IQR}}$ (about `r round(r("Bootstrap-corrected IQR",30)/r("IQR",30),2)` and `r round(r("Bootstrap-corrected IQR",100)/r("IQR",100),2)` times as large). The bias of $\hat\lambda_{\text{IQR}}$ is already a small part of its MSE at these sizes, and the correction adds variance. For $n = 5$ the corrected estimator is **very poor**: its MSE is orders of magnitude larger, and its Monte Carlo standard error is large even with $R = 20\,000$. The reason is that some bootstrap resamples of five values have a quartile gap close to zero. Their $\hat\lambda^*_b$ are huge, pull $\bar\lambda^*$ up, and $2\hat\lambda_{\text{IQR}}-\bar\lambda^*$ can then be very negative. The first-order bootstrap correction therefore needs a moderate sample size to work. With $n = 5$ I would not use it.
+
+**Recommendation.** If the exponential model is believed, use $\hat\lambda_{\text{ML}}$. Keep $\hat\lambda_{\text{IQR}}$ (with type 8 quartiles) as a robustness check for $n \ge 30$. The bootstrap-corrected version brings no gain in MSE in this setting.
+
+# Exercise 2 – Quarterly Australian beer production
+
+The data are `ausbeer` from **fpp2**: quarterly beer production in Australia (megalitres) from `r paste(start(ausbeer), collapse = " Q")` to `r paste(end(ausbeer), collapse = " Q")`, with `r length(ausbeer)` observations.
+
+```{r}
+#| label: fig-ts
+#| fig-cap: "Quarterly beer production in Australia, with a 2×4 moving average (the trend) in red."
+autoplot(ausbeer, series = "Data") +
+  autolayer(ma(ausbeer, order = 4, centre = TRUE), series = "2×4-MA (trend)") +
+  scale_colour_manual(values = c("Data" = "grey30", "2×4-MA (trend)" = "red")) +
+  labs(x = "Year", y = "Megalitres", colour = NULL) +
+  theme_minimal() + theme(legend.position = "bottom")
+```
+
+### 1. Frequency
+
+```{r}
+frequency(ausbeer)
+tsp(ausbeer)   # start, end, frequency
+```
+
+The frequency is **4 (quarterly data)**: there are four observations per year. You can see this in three ways. The `ts` object stores it (`frequency()` returns 4). The time axis goes up in steps of 0.25 years. In @fig-ts, the same saw-tooth shape repeats **every 4 observations**, with one high point per year. The ACF below confirms it: there are large positive spikes at lags 4, 8, 12, … and negative spikes at lags 2, 6, 10, ….
+
+```{r}
+#| label: fig-acf
+#| fig-cap: "ACF of ausbeer: peaks at multiples of 4 reveal the quarterly cycle."
+#| fig-height: 3
+ggAcf(ausbeer, lag.max = 24) + theme_minimal() + ggtitle(NULL)
+```
+
+### 2. Overall behaviour and trend
+
+```{r}
+yr <- floor(time(ausbeer))
+decade_means <- tapply(ausbeer, (yr %/% 10) * 10, mean)
+round(decade_means)
+```
+
+Yes, there is a clear long-term trend, but it is **not linear**. Production rises strongly from about 260 ML per quarter in the late 1950s to about 460–480 ML in the mid-1970s. It then flattens, reaching its highest level around 1975–1990 (the largest single quarter is `r max(ausbeer)` ML in `r paste(floor(time(ausbeer)[which.max(ausbeer)]), "Q", cycle(ausbeer)[which.max(ausbeer)])`). After the early 1990s it **declines slowly**, falling to roughly 400 ML per quarter by 2010. So the trend is growth, then a plateau, then a gentle decline, as the 2×4 moving average in @fig-ts shows.
+
+### 3. Seasonality
+
+Yes, there is strong seasonality. Every year has the same shape: **Q4 (October–December, the Australian summer and Christmas period) is the peak** and **Q2 (April–June, autumn/winter) is the low point**. Q1 and Q3 are in between. Q4 is the highest quarter in every complete year of the series. Q2 is the lowest in most years; in a few years (e.g. `r paste(names(which(tapply(seq_along(ausbeer), yr, function(i) cycle(ausbeer)[i][which.min(ausbeer[i])]) == 3)), collapse = ", ")`) Q3 is marginally lower.
+
+### 4. Variability
+
+```{r}
+#| label: fig-log
+#| fig-cap: "Seasonal swing (max − min within each year) plotted against the annual mean level. The swing grows with the level up to the 1970s, which suggests multiplicative seasonality."
+#| fig-height: 3.2
+annual <- data.frame(year = yr, x = as.numeric(ausbeer)) |>
+  group_by(year) |> filter(n() == 4) |>
+  summarise(level = mean(x), swing = diff(range(x)))
+ggplot(annual, aes(level, swing, colour = year)) + geom_point() +
+  labs(x = "Annual mean level (ML)", y = "Seasonal swing (ML)") + theme_minimal()
+```
+
+The variability is **not quite constant**. In the 1950s–60s, when production was low, the seasonal swings are about 80–100 ML. By the 1970s–80s, at the higher level, they are about 120–150 ML. In other words, **the size of the seasonal pattern grows with the level of the series**, a mild multiplicative effect (@fig-log). In the 2000s the swings shrink again as the level falls. A **log transformation** (or a Box–Cox with $\lambda \approx$ `r round(BoxCox.lambda(ausbeer), 2)`) would make the seasonal amplitude more even over time. The effect is moderate, though, so the transformation is helpful rather than essential. See Q8.
+
+### 5. Unusual observations
+
+```{r}
+tsoutliers(ausbeer)                         # Hyndman's method (based on robust STL residuals)
+idx <- tsoutliers(ausbeer)$index
+data.frame(time = paste(floor(time(ausbeer)[idx]), "Q", cycle(ausbeer)[idx]),
+           value = ausbeer[idx],
+           suggested = round(tsoutliers(ausbeer)$replacements))
+```
+
+* **1980 Q4 (526 ML)** is unusually **low for a fourth quarter**. It is well below the neighbouring Q4 values of 1979 (555) and 1981 (575).
+* **1981 Q1 (548 ML)** is unusually **high for a first quarter**. It is the highest Q1 of that era and even higher than the Q4 just before it.
+
+Taken together, it looks as if part of the usual late-1980 peak was **moved into early 1981**, perhaps because of timing (industrial action, stock-building or a recording artefact). Both points break the usual seasonal ordering, which is why they stand out. The **1990 Q4 value (599 ML)**, the highest in the series, also attracts attention. It is an unusually tall peak just before production starts to decline.
+
+### 6. Seasonal plot
+
+```{r}
+#| label: fig-season
+#| fig-cap: "Seasonal plot: one line per year, coloured by year."
+#| fig-height: 4.5
+ggseasonplot(ausbeer, year.labels = FALSE) + theme_minimal() +
+  labs(y = "Megalitres", title = NULL)
+```
+
+In the seasonal plot every year has the same **Q4-high, Q2-low "tick" shape**, which is hard to see in the long time plot. It also shows the trend in a new way. The 1950s–60s lines (orange) sit at the bottom and the 1970s–80s lines (green/blue) at the top. The 1990s–2000s lines (purple/pink) have dropped back *below* them, which shows the decline more clearly than the time plot does. Years that break the pattern also stand out, for example 1980–81, where the Q4 → Q1 drop is missing.
+
+### 7. Seasonal subseries
+
+```{r}
+#| label: fig-subseries
+#| fig-cap: "Seasonal subseries plot. Blue horizontal lines are the quarter means."
+#| fig-height: 3.5
+ggsubseriesplot(ausbeer) + theme_minimal() + labs(y = "Megalitres", title = NULL)
+round(tapply(ausbeer, cycle(ausbeer), mean))
+```
+
+**Q4 has the highest typical value** (mean ≈ `r round(mean(ausbeer[cycle(ausbeer)==4]))` ML) and **Q2 the lowest** (≈ `r round(mean(ausbeer[cycle(ausbeer)==2]))` ML). Q1 and Q3 are in between. Each quarter's mini-series follows the same long-run rise, plateau and decline, so **the seasonal pattern is broadly stable in shape**: the ordering of the quarters hardly changes. Its **size is not stable**, though. The gap between Q4 and the other quarters is largest in the 1970s–80s and narrows again in the later years.
+
+### 8. Detrend or transform before modelling?
+
+```{r}
+#| label: fig-detrend
+#| fig-cap: "Top: log(ausbeer). Bottom: the series with the 2×4-MA trend removed, as a difference (additive) and as a ratio (multiplicative), each scaled to its own units."
+#| fig-height: 5.5
+trend <- ma(ausbeer, order = 4, centre = TRUE)
+p1 <- autoplot(log(ausbeer)) + labs(x = NULL, y = "log(ML)") + theme_minimal()
+p2 <- cbind(`Data − trend` = ausbeer - trend,
+            `Data / trend` = ausbeer / trend) |>
+  autoplot(facets = TRUE) + labs(x = "Year", y = NULL) + theme_minimal()
+gridExtra::grid.arrange(p1, p2, heights = c(1, 1.6))
+```
+
+Yes, I would do both:
+
+* **Transform.** On the log scale (@fig-detrend, top) the seasonal swings are more similar in size across the whole series than on the original scale (@fig-ts). This supports a log (or Box–Cox) transformation to stabilise the variance, or, equivalently, treating the seasonality as multiplicative.
+* **Detrend.** The level changes substantially and non-linearly (rise, plateau, decline), so a model that assumes a constant mean is not appropriate. The bottom panels show that once the moving-average trend is removed, what is left is a regular seasonal pattern around a flat line. The *ratio* version has a more even amplitude than the *difference* version, which again points to multiplicative seasonality. In practice I would take logs and then either remove the trend or difference the series (seasonal and/or first differences), rather than fit a straight-line trend, because the trend is clearly not linear.
+
+# References {.unnumbered}
