@@ -4,12 +4,12 @@ author: "Shanaya Kumar"
 date: today
 format:
   html:
-    toc: true
+    toc: false
     number-sections: true
     embed-resources: true
     code-fold: show
   pdf:
-    toc: true
+    toc: false
     number-sections: true
     pdf-engine: xelatex
     geometry: margin=2.5cm
