@@ -3,7 +3,7 @@ title: "DATA301 – Assignment IV"
 author: "Shanaya Kumar"
 date: today
 format:
-  pdf:
+  html:
     toc: true
     number-sections: true
     embed-resources: true
