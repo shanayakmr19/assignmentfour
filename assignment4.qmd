@@ -8,6 +8,10 @@ format:
     number-sections: true
     embed-resources: true
     code-fold: show
+  pdf:
+    toc: true
+    number-sections: true
+    pdf-engine: xelatex
 execute:
   warning: false
   message: false
@@ -59,7 +63,7 @@ chk <- sapply(c(7, 8), function(tp) {
   err <- replicate(1e5, lam_iqr_type(rexp(5, rate = 1), tp)) - 1
   c(type = tp, MSE = mean(err^2), largest_error = max(abs(err)))
 })
-kable(t(chk), digits = 2, caption = "IQR estimator, n = 5, λ = 1, 100 000 samples")
+kable(t(chk), digits = 2, caption = "IQR estimator, $n = 5$, $\\lambda = 1$, 100 000 samples")
 ```
 
 **Default in my software.** R's default is type 7 (checked below). Python's `numpy.quantile` and `pandas.Series.quantile` also default to the equivalent `"linear"` method.
@@ -144,7 +148,7 @@ pilot <- lapply(ns, function(n) {
 }) |> bind_rows()
 pilot$R <- pmin(20000, ceiling(pilot$R_needed / 1000) * 1000)
 kable(pilot, digits = 2, row.names = FALSE,
-      caption = "Pilot study (λ = 1, R₀ = 2000): coefficient of variation of the squared errors and chosen R")
+      caption = "Pilot study ($\\lambda = 1$, $R_0 = 2000$): coefficient of variation of the squared errors and chosen R")
 ```
 
 The ML and IQR estimators give a clear target $R$ for each $n$. The bias-corrected estimator at $n = 5$ is different. Its squared errors are so heavy-tailed that their coefficient of variation is roughly ten times larger than for the other estimators, so reaching 2.5% precision would take millions of replications. For that one cell, no practical $R$ reaches 2.5% precision, so I report its Monte Carlo standard error and read the number with care.
@@ -182,13 +186,13 @@ res$estimator <- factor(res$estimator, levels = c("ML", "IQR", "BC"),
 res |>
   transmute(lambda, n, R, estimator,
             `MSE (± MC s.e.)` = sprintf("%.4g (± %.2g)", MSE, MC_SE),
-            `MSE / λ²` = relMSE) |>
-  kable(digits = 4, row.names = FALSE, caption = "Estimated MSE for every (λ, n) and estimator")
+            `MSE / $\\lambda^2$` = relMSE) |>
+  kable(digits = 4, row.names = FALSE, caption = "Estimated MSE for every ($\\lambda$, $n$) and estimator")
 ```
 
 ```{r}
 #| label: fig-mse
-#| fig-cap: "MSE/λ² (log scale) against sample size. Error bars are ±2 Monte Carlo standard errors. Each panel is one value of λ. The panels look the same because MSE scales exactly with λ²; the exception is the unstable bootstrap-corrected estimator at n = 5."
+#| fig-cap: 'MSE/$\lambda^2$ (log scale) against sample size. Error bars are $\pm 2$ Monte Carlo standard errors. Each panel is one value of $\lambda$. The panels look the same because MSE scales exactly with $\lambda^2$; the exception is the unstable bootstrap-corrected estimator at $n = 5$.'
 #| fig-width: 9
 #| fig-height: 3.8
 ggplot(res, aes(n, relMSE, colour = estimator)) +
@@ -197,7 +201,7 @@ ggplot(res, aes(n, relMSE, colour = estimator)) +
                     ymax = relMSE + 2 * MC_SE / lambda^2), width = .06) +
   scale_x_log10(breaks = ns) + scale_y_log10() +
   facet_wrap(~ lambda, labeller = label_both) +
-  labs(y = "MSE / λ²", colour = NULL) +
+  labs(y = expression(MSE / lambda^2), colour = NULL) +
   theme_minimal() + theme(legend.position = "bottom")
 ```
 
@@ -211,21 +215,21 @@ r <- function(est, n, what = "relMSE") mean(res[[what]][res$estimator == est & r
 
 * **The MSE is proportional to $\lambda^2$.** Within each $n$, the column $\text{MSE}/\lambda^2$ is (up to Monte Carlo error) the same for $\lambda = 0.1, 1, 10$. This is the scale-equivariance argument from @sec-reps, and it serves as a check that the simulation is correct. So the comparison between estimators depends only on $n$. The one exception is the bootstrap-corrected estimator at $n=5$. Its three estimates differ a lot, but each has a Monte Carlo standard error about as large as the estimate itself, so the differences are simulation noise. It is a sign that this MSE is extremely unstable, and possibly infinite.
 * **Maximum likelihood is best in every cell.** Its relative MSE is about `r round(r("ML",5),3)`, `r round(r("ML",30),3)` and `r round(r("ML",100),4)` for $n = 5, 30, 100$. The exact values are $(n+2)/((n-1)(n-2))$, which gives $0.583$, $0.039$ and $0.0105$, so the simulation agrees. This is what we expect when the model is correct, because the ML estimator is asymptotically efficient.
-* **The IQR estimator is worse, with roughly 1.5–2.5 times the MSE of ML** (relative MSE ≈ `r round(r("IQR",5),2)`, `r round(r("IQR",30),3)`, `r round(r("IQR",100),4)`). It only uses the two quartiles, so it throws away information. It is not a bad estimator, though, and it would be more robust if the data contained a few extreme inter-arrival times.
+* **The IQR estimator is worse, with roughly 1.5–2.5 times the MSE of ML** (relative MSE $\approx$ `r round(r("IQR",5),2)`, `r round(r("IQR",30),3)`, `r round(r("IQR",100),4)`). It only uses the two quartiles, so it throws away information. It is not a bad estimator, though, and it would be more robust if the data contained a few extreme inter-arrival times.
 * **The bootstrap bias correction does not pay off in MSE.** For $n = 30$ and $n = 100$, $\tilde\lambda$ has a *slightly larger* MSE than $\hat\lambda_{\text{IQR}}$ (about `r round(r("Bootstrap-corrected IQR",30)/r("IQR",30),2)` and `r round(r("Bootstrap-corrected IQR",100)/r("IQR",100),2)` times as large). The bias of $\hat\lambda_{\text{IQR}}$ is already a small part of its MSE at these sizes, and the correction adds variance. For $n = 5$ the corrected estimator is **very poor**: its MSE is orders of magnitude larger, and its Monte Carlo standard error is large even with $R = 20\,000$. The reason is that some bootstrap resamples of five values have a quartile gap close to zero. Their $\hat\lambda^*_b$ are huge, pull $\bar\lambda^*$ up, and $2\hat\lambda_{\text{IQR}}-\bar\lambda^*$ can then be very negative. The first-order bootstrap correction therefore needs a moderate sample size to work. With $n = 5$ I would not use it.
 
 **Recommendation.** If the exponential model is believed, use $\hat\lambda_{\text{ML}}$. Keep $\hat\lambda_{\text{IQR}}$ (with type 8 quartiles) as a robustness check for $n \ge 30$. The bootstrap-corrected version brings no gain in MSE in this setting.
 
 # Exercise 2 – Quarterly Australian beer production
 
-The data are `ausbeer` from **fpp2**: quarterly beer production in Australia (megalitres) from `r paste(start(ausbeer), collapse = " Q")` to `r paste(end(ausbeer), collapse = " Q")`, with `r length(ausbeer)` observations.
+The data are `ausbeer` from **fpp2**: quarterly beer production in Australia (megalitres) from `r paste(start(ausbeer), collapse = " Q")` to `r paste(end(ausbeer), collapse = " Q")`, with `r length(ausbeer)` observations. The series is analysed in detail by @hyndman2018, whose approach (time plot, seasonal plot, subseries plot and transformations) I follow here.
 
 ```{r}
 #| label: fig-ts
-#| fig-cap: "Quarterly beer production in Australia, with a 2×4 moving average (the trend) in red."
+#| fig-cap: "Quarterly beer production in Australia, with a 2x4 moving average (the trend) in red."
 autoplot(ausbeer, series = "Data") +
-  autolayer(ma(ausbeer, order = 4, centre = TRUE), series = "2×4-MA (trend)") +
-  scale_colour_manual(values = c("Data" = "grey30", "2×4-MA (trend)" = "red")) +
+  autolayer(ma(ausbeer, order = 4, centre = TRUE), series = "2x4-MA (trend)") +
+  scale_colour_manual(values = c("Data" = "grey30", "2x4-MA (trend)" = "red")) +
   labs(x = "Year", y = "Megalitres", colour = NULL) +
   theme_minimal() + theme(legend.position = "bottom")
 ```
@@ -254,7 +258,7 @@ decade_means <- tapply(ausbeer, (yr %/% 10) * 10, mean)
 round(decade_means)
 ```
 
-Yes, there is a clear long-term trend, but it is **not linear**. Production rises strongly from about 260 ML per quarter in the late 1950s to about 460–480 ML in the mid-1970s. It then flattens, reaching its highest level around 1975–1990 (the largest single quarter is `r max(ausbeer)` ML in `r paste(floor(time(ausbeer)[which.max(ausbeer)]), "Q", cycle(ausbeer)[which.max(ausbeer)])`). After the early 1990s it **declines slowly**, falling to roughly 400 ML per quarter by 2010. So the trend is growth, then a plateau, then a gentle decline, as the 2×4 moving average in @fig-ts shows.
+Yes, there is a clear long-term trend, but it is **not linear**. Production rises strongly from about 260 ML per quarter in the late 1950s to about 460–480 ML in the mid-1970s. It then flattens, reaching its highest level around 1975–1990 (the largest single quarter is `r max(ausbeer)` ML in `r paste(floor(time(ausbeer)[which.max(ausbeer)]), "Q", cycle(ausbeer)[which.max(ausbeer)])`). After the early 1990s it **declines slowly**, falling to roughly 400 ML per quarter by 2010. So the trend is growth, then a plateau, then a gentle decline, as the 2x4 moving average in @fig-ts shows.
 
 ### 3. Seasonality
 
@@ -264,7 +268,7 @@ Yes, there is strong seasonality. Every year has the same shape: **Q4 (October�
 
 ```{r}
 #| label: fig-log
-#| fig-cap: "Seasonal swing (max − min within each year) plotted against the annual mean level. The swing grows with the level up to the 1970s, which suggests multiplicative seasonality."
+#| fig-cap: "Seasonal swing (max - min within each year) plotted against the annual mean level. The swing grows with the level up to the 1970s, which suggests multiplicative seasonality."
 #| fig-height: 3.2
 annual <- data.frame(year = yr, x = as.numeric(ausbeer)) |>
   group_by(year) |> filter(n() == 4) |>
@@ -300,7 +304,7 @@ ggseasonplot(ausbeer, year.labels = FALSE) + theme_minimal() +
   labs(y = "Megalitres", title = NULL)
 ```
 
-In the seasonal plot every year has the same **Q4-high, Q2-low "tick" shape**, which is hard to see in the long time plot. It also shows the trend in a new way. The 1950s–60s lines (orange) sit at the bottom and the 1970s–80s lines (green/blue) at the top. The 1990s–2000s lines (purple/pink) have dropped back *below* them, which shows the decline more clearly than the time plot does. Years that break the pattern also stand out, for example 1980–81, where the Q4 → Q1 drop is missing.
+In the seasonal plot every year has the same **Q4-high, Q2-low "tick" shape**, which is hard to see in the long time plot. It also shows the trend in a new way. The 1950s–60s lines (orange) sit at the bottom and the 1970s–80s lines (green/blue) at the top. The 1990s–2000s lines (purple/pink) have dropped back *below* them, which shows the decline more clearly than the time plot does. Years that break the pattern also stand out, for example 1980–81, where the Q4-to-Q1 drop is missing.
 
 ### 7. Seasonal subseries
 
@@ -312,17 +316,17 @@ ggsubseriesplot(ausbeer) + theme_minimal() + labs(y = "Megalitres", title = NULL
 round(tapply(ausbeer, cycle(ausbeer), mean))
 ```
 
-**Q4 has the highest typical value** (mean ≈ `r round(mean(ausbeer[cycle(ausbeer)==4]))` ML) and **Q2 the lowest** (≈ `r round(mean(ausbeer[cycle(ausbeer)==2]))` ML). Q1 and Q3 are in between. Each quarter's mini-series follows the same long-run rise, plateau and decline, so **the seasonal pattern is broadly stable in shape**: the ordering of the quarters hardly changes. Its **size is not stable**, though. The gap between Q4 and the other quarters is largest in the 1970s–80s and narrows again in the later years.
+**Q4 has the highest typical value** (mean $\approx$ `r round(mean(ausbeer[cycle(ausbeer)==4]))` ML) and **Q2 the lowest** ($\approx$ `r round(mean(ausbeer[cycle(ausbeer)==2]))` ML). Q1 and Q3 are in between. Each quarter's mini-series follows the same long-run rise, plateau and decline, so **the seasonal pattern is broadly stable in shape**: the ordering of the quarters hardly changes. Its **size is not stable**, though. The gap between Q4 and the other quarters is largest in the 1970s–80s and narrows again in the later years.
 
 ### 8. Detrend or transform before modelling?
 
 ```{r}
 #| label: fig-detrend
-#| fig-cap: "Top: log(ausbeer). Bottom: the series with the 2×4-MA trend removed, as a difference (additive) and as a ratio (multiplicative), each scaled to its own units."
+#| fig-cap: "Top: log(ausbeer). Bottom: the series with the 2x4-MA trend removed, as a difference (additive) and as a ratio (multiplicative), each scaled to its own units."
 #| fig-height: 5.5
 trend <- ma(ausbeer, order = 4, centre = TRUE)
 p1 <- autoplot(log(ausbeer)) + labs(x = NULL, y = "log(ML)") + theme_minimal()
-p2 <- cbind(`Data − trend` = ausbeer - trend,
+p2 <- cbind(`Data - trend` = ausbeer - trend,
             `Data / trend` = ausbeer / trend) |>
   autoplot(facets = TRUE) + labs(x = "Year", y = NULL) + theme_minimal()
 gridExtra::grid.arrange(p1, p2, heights = c(1, 1.6))
